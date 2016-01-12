@@ -22,11 +22,22 @@ import java.net.URL;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import org.apache.solr.client.solrj.SolrQuery;
+import org.apache.solr.client.solrj.impl.CloudSolrClient;
+import org.apache.solr.client.solrj.response.QueryResponse;
+import org.apache.solr.common.params.CommonParams;
+import org.apache.solr.common.params.FacetParams;
+import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.util.NamedList;
+import org.apache.solr.common.util.SimpleOrderedMap;
 import org.apache.solr.core.SolrInfoMBean;
 import org.apache.solr.search.facet.FacetModule;
 import org.apache.solr.util.plugin.NamedListInitializedPlugin;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * TODO!
@@ -36,6 +47,7 @@ import org.apache.solr.util.plugin.NamedListInitializedPlugin;
  */
 public abstract class SearchComponent implements SolrInfoMBean, NamedListInitializedPlugin
 {
+  public static Logger log = LoggerFactory.getLogger(SearchComponent.class);
   /**
    * The name given to this component in solrconfig.xml file
    */
@@ -142,6 +154,48 @@ public abstract class SearchComponent implements SolrInfoMBean, NamedListInitial
     map.put(RealTimeGetComponent.COMPONENT_NAME, RealTimeGetComponent.class);
     map.put(ExpandComponent.COMPONENT_NAME, ExpandComponent.class);
     standard_components = Collections.unmodifiableMap(map);
+  }
+
+  //Return true if match else false
+  public Boolean matchPattern(String pattern,String paramValue) {
+    Pattern r = Pattern.compile(pattern);
+    Matcher m = r.matcher(paramValue);
+    if (m.find( )) {
+      return true;
+    }
+    return false;
+  }
+
+  public boolean checkCardinality(SolrParams request, RestrictiveComponentAttributes restrictiveComponentAttributes, String fieldName) throws RestrictedQueryException {
+      if (request.get(CommonParams.RESTRICTIVE) == null || !(request.get(CommonParams.RESTRICTIVE).equals("true")) ) {
+          try {
+              CloudSolrClient server = new CloudSolrClient(restrictiveComponentAttributes.getCardinalityCheckSolrServer());
+              server.setDefaultCollection(restrictiveComponentAttributes.getCardinalityCheckCollectionName());
+              QueryResponse response = null ;
+              SolrQuery query = new SolrQuery();
+              query.setRequestHandler("/select");
+              query.setQuery("*:*");
+              query.set("json.facet","{ x : \"unique(" + fieldName + ")\"}");
+              query.set(CommonParams.RESTRICTIVE,"true");
+              response = server.query(query);
+
+              SimpleOrderedMap fqResults = (SimpleOrderedMap) response.getResponse().get("facets");
+              if(fqResults != null){
+                  Long count = (Long) fqResults.get("x");
+                  if (count >= restrictiveComponentAttributes.getCardinalityThreshold()){
+                      return false;
+                  }
+              }
+              return true;
+          } catch (Exception ex) {
+              log.debug(ex.getMessage() ,ex);
+              throw new RestrictedQueryException(ex);
+          }
+      }
+      else {
+          return true;
+      }
+
   }
 
 }

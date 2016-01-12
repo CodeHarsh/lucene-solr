@@ -779,7 +779,12 @@
        of SearchComponents (see below) and supports distributed
        queries across multiple shards
     -->
-  <requestHandler name="/select" class="solr.SearchHandler">
+  <requestHandler name="/select" class="solr.RestrictiveSearchHandler">
+    <lst name="cardinality-check">
+      <str name="zk-server">localhost:9983</str>
+      <int name="cardinality-threshold">2000</int>
+    </lst>
+
     <!-- default values for query parameters can be specified, these
          will be overridden by parameters in the request
       -->
@@ -982,6 +987,8 @@
     </lst>
   </requestHandler>
 
+       <searchComponent name="query"     class="solr.RestrictiveQueryComponent" />
+       <searchComponent name="facet"     class="solr.RestrictiveFacetComponent" />
   <!-- Search Components
 
        Search components are registered to SolrCore and used by 

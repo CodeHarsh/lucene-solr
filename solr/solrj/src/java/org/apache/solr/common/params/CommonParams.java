@@ -48,6 +48,9 @@ public interface CommonParams {
   /** query string */
   public static final String Q ="q";
 
+  /** restrictive query */
+  public static final String RESTRICTIVE ="restrictive";
+
   /** rank query */
   public static final String RQ ="rq";
   
