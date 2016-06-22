@@ -115,7 +115,7 @@ public class CloudSolrClient extends SolrClient {
   //no of times collection state to be reloaded if stale state error is received
   private static final int MAX_STALE_RETRIES = 5;
   Random rand = new Random();
-  
+
   private final boolean updatesToLeaders;
   private boolean parallelUpdates = true;
   private ExecutorService threadPool = ExecutorUtil
@@ -131,11 +131,11 @@ public class CloudSolrClient extends SolrClient {
     NON_ROUTABLE_PARAMS.add(UpdateParams.COMMIT);
     NON_ROUTABLE_PARAMS.add(UpdateParams.WAIT_SEARCHER);
     NON_ROUTABLE_PARAMS.add(UpdateParams.OPEN_SEARCHER);
-    
+
     NON_ROUTABLE_PARAMS.add(UpdateParams.SOFT_COMMIT);
     NON_ROUTABLE_PARAMS.add(UpdateParams.PREPARE_COMMIT);
     NON_ROUTABLE_PARAMS.add(UpdateParams.OPTIMIZE);
-    
+
     // Not supported via SolrCloud
     // NON_ROUTABLE_PARAMS.add(UpdateParams.ROLLBACK);
 
@@ -145,14 +145,35 @@ public class CloudSolrClient extends SolrClient {
 
 
   protected final Map<String, ExpiringCachedDocCollection> collectionStateCache = new ConcurrentHashMap<String, ExpiringCachedDocCollection>(){
+    class QueueEntry {
+      private String key;
+      private ExpiringCachedDocCollection expiringCachedDocCollection;
+      QueueEntry(String key, ExpiringCachedDocCollection expiringCachedDocCollection) {
+        this.key = key;
+        this.expiringCachedDocCollection = expiringCachedDocCollection;
+      }
+    }
+    PriorityQueue<QueueEntry> expirePQueue = new PriorityQueue<QueueEntry>(10, new Comparator<QueueEntry>() {
+      @Override
+      public int compare(QueueEntry o1, QueueEntry o2) {
+        return o1.expiringCachedDocCollection.cachedAt.compareTo(o2.expiringCachedDocCollection.cachedAt);
+      }
+    });
+
+    @Override
+    public ExpiringCachedDocCollection put(String key, ExpiringCachedDocCollection expiringCachedDocCollection) {
+      ExpiringCachedDocCollection retCacheDocCol = super.put(key, expiringCachedDocCollection);
+      expirePQueue.add(new QueueEntry(key, retCacheDocCol));
+      return retCacheDocCol;
+    }
+
     @Override
     public ExpiringCachedDocCollection get(Object key) {
+      while(expirePQueue.peek().expiringCachedDocCollection.isExpired(timeToLive)) {
+        super.remove(expirePQueue.poll().key);
+      }
       ExpiringCachedDocCollection val = super.get(key);
       if(val == null) return null;
-      if(val.isExpired(timeToLive)) {
-        super.remove(key);
-        return null;
-      }
       return val;
     }
 
@@ -160,7 +181,7 @@ public class CloudSolrClient extends SolrClient {
 
   class ExpiringCachedDocCollection {
     final DocCollection cached;
-    long cachedAt;
+    Long cachedAt;
 
     ExpiringCachedDocCollection(DocCollection cached) {
       this.cached = cached;
