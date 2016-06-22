@@ -142,9 +142,7 @@ public class CloudSolrClient extends SolrClient {
       while((expirePQueue.peek() != null ) && expirePQueue.peek().isExpired(timeToLive)) {
         super.remove(expirePQueue.poll().key);
       }
-      DocCollection val = super.get(key);
-      if(val == null) return null;
-      return val;
+      return super.get(key);
     }
 
   };
