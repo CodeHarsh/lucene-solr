@@ -16,31 +16,6 @@
  */
 package org.apache.solr.client.solrj.impl;
 
-import java.io.IOException;
-import java.lang.invoke.MethodHandles;
-import java.net.ConnectException;
-import java.net.SocketException;
-import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.PriorityQueue;
-import java.util.Comparator;
-
 import org.apache.http.NoHttpResponseException;
 import org.apache.http.client.HttpClient;
 import org.apache.http.conn.ConnectTimeoutException;
@@ -56,39 +31,26 @@ import org.apache.solr.client.solrj.util.ClientUtils;
 import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrException.ErrorCode;
 import org.apache.solr.common.ToleratedUpdateError;
-import org.apache.solr.common.cloud.Aliases;
-import org.apache.solr.common.cloud.ClusterState;
-import org.apache.solr.common.cloud.CollectionStatePredicate;
-import org.apache.solr.common.cloud.CollectionStateWatcher;
-import org.apache.solr.common.cloud.DocCollection;
-import org.apache.solr.common.cloud.DocRouter;
-import org.apache.solr.common.cloud.ImplicitDocRouter;
-import org.apache.solr.common.cloud.Replica;
-import org.apache.solr.common.cloud.Slice;
-import org.apache.solr.common.cloud.ZkCoreNodeProps;
-import org.apache.solr.common.cloud.ZkNodeProps;
-import org.apache.solr.common.cloud.ZkStateReader;
-import org.apache.solr.common.cloud.ZooKeeperException;
+import org.apache.solr.common.cloud.*;
 import org.apache.solr.common.params.ModifiableSolrParams;
 import org.apache.solr.common.params.ShardParams;
 import org.apache.solr.common.params.SolrParams;
 import org.apache.solr.common.params.UpdateParams;
-import org.apache.solr.common.util.ExecutorUtil;
-import org.apache.solr.common.util.Hash;
-import org.apache.solr.common.util.NamedList;
-import org.apache.solr.common.util.SimpleOrderedMap;
-import org.apache.solr.common.util.SolrjNamedThreadFactory;
-import org.apache.solr.common.util.StrUtils;
+import org.apache.solr.common.util.*;
 import org.apache.zookeeper.KeeperException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
-import static org.apache.solr.common.params.CommonParams.AUTHC_PATH;
-import static org.apache.solr.common.params.CommonParams.AUTHZ_PATH;
-import static org.apache.solr.common.params.CommonParams.COLLECTIONS_HANDLER_PATH;
-import static org.apache.solr.common.params.CommonParams.CONFIGSETS_HANDLER_PATH;
-import static org.apache.solr.common.params.CommonParams.CORES_HANDLER_PATH;
+import java.io.IOException;
+import java.lang.invoke.MethodHandles;
+import java.net.ConnectException;
+import java.net.SocketException;
+import java.nio.file.Path;
+import java.util.*;
+import java.util.concurrent.*;
+
+import static org.apache.solr.common.params.CommonParams.*;
 
 /**
  * SolrJ client class to communicate with SolrCloud.
@@ -146,55 +108,46 @@ public class CloudSolrClient extends SolrClient {
   private volatile List<Object> locks = objectList(3);
 
 
-  protected final Map<String, ExpiringCachedDocCollection> collectionStateCache = new ConcurrentHashMap<String, ExpiringCachedDocCollection>(){
+  protected final Map<String, DocCollection> collectionStateCache = new ConcurrentHashMap<String, DocCollection>(){
     class QueueEntry {
-      private String key;
-      private ExpiringCachedDocCollection expiringCachedDocCollection;
-      QueueEntry(String key, ExpiringCachedDocCollection expiringCachedDocCollection) {
+      private final String key;
+      private final long cachedAt;
+
+      QueueEntry(String key, long cachedAt) {
         this.key = key;
-        this.expiringCachedDocCollection = expiringCachedDocCollection;
+        this.cachedAt = cachedAt;
+      }
+
+      boolean isExpired(long timeToLiveMs) {
+          return (System.nanoTime() - cachedAt)
+                  > TimeUnit.NANOSECONDS.convert(timeToLiveMs, TimeUnit.MILLISECONDS);
       }
     }
     PriorityQueue<QueueEntry> expirePQueue = new PriorityQueue<QueueEntry>(10, new Comparator<QueueEntry>() {
       @Override
       public int compare(QueueEntry o1, QueueEntry o2) {
-        return o1.expiringCachedDocCollection.cachedAt.compareTo(o2.expiringCachedDocCollection.cachedAt);
+        return Long.compare(o1.cachedAt, o2.cachedAt);
       }
     });
 
     @Override
-    public ExpiringCachedDocCollection put(String key, ExpiringCachedDocCollection expiringCachedDocCollection) {
-      ExpiringCachedDocCollection retCacheDocCol = super.put(key, expiringCachedDocCollection);
-      expirePQueue.add(new QueueEntry(key, retCacheDocCol));
+    public DocCollection put(String key, DocCollection docCollection) {
+      DocCollection retCacheDocCol = super.put(key, docCollection);
+      expirePQueue.add(new QueueEntry(key, System.nanoTime()));
       return retCacheDocCol;
     }
 
     @Override
-    public ExpiringCachedDocCollection get(Object key) {
-      while((expirePQueue.peek() != null ) && expirePQueue.peek().expiringCachedDocCollection.isExpired(timeToLive)) {
+    public DocCollection get(Object key) {
+      while((expirePQueue.peek() != null ) && expirePQueue.peek().isExpired(timeToLive)) {
         super.remove(expirePQueue.poll().key);
       }
-      ExpiringCachedDocCollection val = super.get(key);
+      DocCollection val = super.get(key);
       if(val == null) return null;
       return val;
     }
 
   };
-
-  class ExpiringCachedDocCollection {
-    final DocCollection cached;
-    Long cachedAt;
-
-    ExpiringCachedDocCollection(DocCollection cached) {
-      this.cached = cached;
-      this.cachedAt = System.nanoTime();
-    }
-
-    boolean isExpired(long timeToLiveMs) {
-      return (System.nanoTime() - cachedAt)
-          > TimeUnit.NANOSECONDS.convert(timeToLiveMs, TimeUnit.MILLISECONDS);
-    }
-  }
 
   /**
    * Create a new client object that connects to Zookeeper and is always aware
@@ -1089,7 +1042,7 @@ public class CloudSolrClient extends SolrClient {
             // looks like we couldn't reach the server because the state was stale == retry
             stateWasStale = true;
             // we just pulled state from ZK, so update the cache so that the retry uses it
-            collectionStateCache.put(ext.getName(), new ExpiringCachedDocCollection(latestStateFromZk));
+            collectionStateCache.put(ext.getName(), latestStateFromZk);
           }
         }
       }
@@ -1352,13 +1305,12 @@ public class CloudSolrClient extends SolrClient {
       col = ref.get();//this is a call to ZK
     }
     if (col == null) return null;
-    if (col.getStateFormat() > 1) collectionStateCache.put(collection, new ExpiringCachedDocCollection(col));
+    if (col.getStateFormat() > 1) collectionStateCache.put(collection, col);
     return col;
   }
 
   private DocCollection getFromCache(String c){
-    ExpiringCachedDocCollection cachedState = collectionStateCache.get(c);
-    return cachedState != null ? cachedState.cached : null;
+    return collectionStateCache.get(c);
   }
 
 
