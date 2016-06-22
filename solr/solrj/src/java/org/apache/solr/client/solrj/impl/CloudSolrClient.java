@@ -171,7 +171,7 @@ public class CloudSolrClient extends SolrClient {
 
     @Override
     public ExpiringCachedDocCollection get(Object key) {
-      while(expirePQueue.peek().expiringCachedDocCollection.isExpired(timeToLive)) {
+      while((expirePQueue.peek() != null ) && expirePQueue.peek().expiringCachedDocCollection.isExpired(timeToLive)) {
         super.remove(expirePQueue.poll().key);
       }
       ExpiringCachedDocCollection val = super.get(key);
